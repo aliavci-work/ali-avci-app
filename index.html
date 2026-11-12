@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="kendime-version" content="1.2.1">
+  <meta name="theme-color" content="#f4eee2">
+  <meta name="description" content="Notlar, takvim ve kişisel kayıtlar. Şifreli yerel kasa ve Google Drive yedeği.">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>Ali Avcı • Notlar ve Takvim</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
+  <link rel="apple-touch-icon" href="./icons/icon-192.png">
+  <link rel="stylesheet" href="./style.css">
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="./config.js" defer></script>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <div id="app"><div class="loading">Ali Avcı açılıyor…</div></div>
+  <div id="toasts" aria-live="polite"></div>
+  <dialog id="editor" aria-label="Düzenleme penceresi"><div id="editor-content"></div></dialog>
+  <noscript>Bu uygulamayı kullanmak için JavaScript etkin olmalıdır.</noscript>
+</body>
+</html>

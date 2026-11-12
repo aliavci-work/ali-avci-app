@@ -1,0 +1,26 @@
+{
+  "id": "./",
+  "name": "Ali Avcı • Kişisel Alan",
+  "short_name": "Ali Avcı",
+  "description": "Notlar, takvim ve özel menüler; Google Drive ile eşitleme.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4eee2",
+  "theme_color": "#f4eee2",
+  "lang": "tr",
+  "icons": [
+    {
+      "src": "./icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

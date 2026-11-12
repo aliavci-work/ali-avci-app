@@ -144,6 +144,9 @@
       }
       route='home';authBusy=false;render();
       toast(loginMode==='setup'?'Şifreli kasa oluşturuldu.':'Giriş başarılı.');
+      // Aynı açık sekmede hâlâ geçerli yetkiler varsa yeniden Google penceresi açmadan devam et.
+      if(googleToken && Date.now()<googleExpiry) void syncCloud();
+      if(gmailToken && Date.now()<gmailExpiry) void sendPendingMail();
     } catch(err) {
       unlocked=false;isStorageReady=false;state=EMPTY_STATE();vaultKey=null;vaultPassword=null;
       authMessage=err.name==='OperationError'?'Parola yanlış veya şifreli kayıt açılamadı.':(err.message||'Giriş başarısız.');
@@ -153,9 +156,10 @@
   async function lockApp() {
     if(!unlocked)return;
     try {await localSaveChain;}catch{}
-    if(googleToken && window.google?.accounts?.oauth2)window.google.accounts.oauth2.revoke(googleToken,()=>{});
-    if(gmailToken && window.google?.accounts?.oauth2)window.google.accounts.oauth2.revoke(gmailToken,()=>{});
-    googleToken=null;googleExpiry=0;gmailToken=null;gmailExpiry=0;vaultKey=null;vaultSalt=null;vaultPassword=null;
+    // Kilitle: yalnızca şifreli kasa oturumunu bitir. Google izinlerini iptal ETME.
+    // Token'lar sadece bu açık sekmenin belleğindedir; sekme kapanırsa kaybolurlar.
+    // Google erişimini bilerek kaldırmak için Ayarlar > Bağlantıyı kes kullanılır.
+    vaultKey=null;vaultSalt=null;vaultPassword=null;
     unlocked=false;isStorageReady=false;state=EMPTY_STATE();closeEditor();loginMode='unlock';authMessage='';showAuth();
   }
   function openDatabase() {
@@ -243,9 +247,13 @@
   function navItem(id,label,icon) {
     return `<button type="button" class="nav-item ${route===id?'active':''}" data-action="nav" data-id="${safe(id)}"><span class="nav-icon">${icon}</span><span class="nav-label">${safe(label)}</span></button>`;
   }
+  const driveReady = () => Boolean(googleToken && Date.now()<googleExpiry);
+  const gmailReady = () => Boolean(gmailToken && Date.now()<gmailExpiry);
   function statusText() {
-    if(googleToken && Date.now() < googleExpiry) return 'Drive bağlı';
-    if(googleToken) return 'Oturum yenilenmeli';
+    if(driveReady() && gmailReady()) return 'Drive + Gmail bağlı';
+    if(driveReady()) return 'Drive bağlı';
+    if(gmailReady()) return 'Gmail bağlı';
+    if(googleToken || gmailToken) return 'Google bağlantısını yenile';
     return 'Yalnızca cihazda';
   }
   function sidebar() {
@@ -266,7 +274,8 @@
   function topbar() {
     return `<div class="topbar"><button type="button" class="button mobile-menu" data-action="drawer" aria-label="Menüyü aç">☰</button>
       <span class="eyebrow">KİŞİSEL PANEL</span>
-      <div class="top-actions"><span class="pill ${googleToken&&Date.now()<googleExpiry?'connected':''}">● ${safe(statusText())}</span>
+      <div class="top-actions"><span class="pill ${driveReady()&&gmailReady()?'connected':''}">● ${safe(statusText())}</span>
+        ${driveReady()&&gmailReady()?'':`<button type="button" class="button primary" data-action="connect-all">Google'ı bağla</button>`}
         <button type="button" class="button" data-action="sync">↻ Eşitle</button><button type="button" class="button" data-action="lock">Kilitle</button></div></div>`;
   }
   function head(title,desc) {return `<div class="eyebrow">KİŞİSEL ÇALIŞMA ALANIN</div><h1 class="page-title">${safe(title)}</h1><p class="page-subtitle">${safe(desc)}</p>`;}
@@ -327,6 +336,11 @@
   function renderSettings() {
     const id=clientId();const connected=googleToken&&Date.now()<googleExpiry;
     return `${head('Ayarlar & Google Drive','Bulut bağlantını ve kişisel veri yedeklerini yönet.')}
+      <section class="settings-block" style="margin-bottom:18px"><h2>Google bağlantıları</h2>
+        <p>Drive ve Gmail için daha önce verdiğin izinleri tek işlemde yeniden kullanabilirsin. Google erişimi süreli olduğu için tarayıcı tamamen kapandıktan sonra yeniden bağlama gerekebilir; ancak her defasında ayrı ayrı izin vermen gerekmez.</p>
+        <div class="top-actions"><button class="button primary" data-action="connect-all">${driveReady()&&gmailReady()?'Google bağlantılarını yenile':'Drive + Gmail tek tıkla bağlan'}</button></div>
+        <p class="hint">Google erişim anahtarları cihazda kalıcı olarak saklanmaz. “Kilitle” yalnızca kasayı kilitler; Google iznini kaldırmak için “Bağlantıyı kes” kullanılır.</p>
+      </section>
       <div class="settings-grid"><section class="settings-block"><h2>Google Drive bağlantısı</h2><p>Drive verileri <strong>${safe(FOLDER_NAME)}/${safe(FILE_NAME)}</strong> dosyasına şifrelenerek kaydedilir. Google hesap parolası uygulamaya girilmez.</p>
         <div class="pill ${connected?'connected':''}">● ${safe(statusText())}</div>
         <label class="field-label" for="client-id">Google OAuth Web Client ID</label>
@@ -351,7 +365,7 @@
   function render() {
     if(!isStorageReady || !unlocked) {showAuth();return;}
     const main=route==='home'?renderHome():route==='notes'?renderNotes():route==='calendar'?renderCalendar():route==='settings'?renderSettings():route.startsWith('menu:')?renderNotes(route.slice(5)):renderHome();
-    app.innerHTML=`<div class="shell">${sidebar()}<main class="main">${topbar()}${main}<div class="about">Ali Avcı v1.2.1 · Şifreli yerel kayıt · Şifreli Google Drive yedeği · İzinli Gmail gönderimi.</div></main></div>`;
+    app.innerHTML=`<div class="shell">${sidebar()}<main class="main">${topbar()}${main}<div class="about">Ali Avcı v1.2.2 · Şifreli yerel kayıt · Şifreli Google Drive yedeği · İzinli Gmail gönderimi.</div></main></div>`;
   }
   function showEditor(html) { dialogBody.innerHTML=html;dialog.showModal();setTimeout(()=>dialog.querySelector('input:not([type=hidden]),textarea')?.focus(),40); }
   function closeEditor(){dialog.close();dialogBody.innerHTML='';}
@@ -433,6 +447,7 @@
         case 'prev-month':calendarMonth=new Date(calendarMonth.getFullYear(),calendarMonth.getMonth()-1,1);render();break;
         case 'next-month':calendarMonth=new Date(calendarMonth.getFullYear(),calendarMonth.getMonth()+1,1);render();break;
         case 'lock':await lockApp();break;
+        case 'connect-all':connectAllGoogle();break;
         case 'connect-gmail':connectGmail();break;
         case 'send-pending':await sendPendingMail(true);break;
         case 'save-client':saveClientId();break;
@@ -491,7 +506,7 @@
         mailError='';render();toast('Gmail izni alındı. Bekleyen notlar gönderiliyor.');void sendPendingMail();
       },error_callback:()=>toast('Gmail giriş penceresi tamamlanamadı.',true)
     });
-    gmailClient.requestAccessToken({prompt:'consent'});
+    gmailClient.requestAccessToken({prompt:''});
   }
   function encodeMail(item) {
     const subject=`Ali Avcı | ${item.kind}: ${item.title}`;
@@ -549,11 +564,46 @@
       },
       error_callback:()=>toast('Google giriş penceresi tamamlanamadı.',true)
     });
-    googleClient.requestAccessToken({prompt:'consent'});
+    googleClient.requestAccessToken({prompt:''});
+  }
+  function connectAllGoogle() {
+    const id=clientId();
+    if(!id)throw Error('Önce Ayarlar & Drive bölümünde Google OAuth Web Client ID kaydet.');
+    if(!window.google?.accounts?.oauth2)throw Error('Google giriş kitaplığı yüklenemedi. İnternet bağlantını kontrol et.');
+    // Bu işlem sadece düğmeye basılarak başlatılır. Google izinleri ilk defa isteniyorsa Google sorar.
+    const bothScopes=[SCOPE,GMAIL_SCOPE];
+    googleClient=window.google.accounts.oauth2.initTokenClient({
+      client_id:id,scope:bothScopes.join(' '),
+      callback:async response=>{
+        if(response.error || !response.access_token){
+          toast('Google bağlantısı kurulamadı: '+(response.error||'Erişim izni verilmedi.'),true);return;
+        }
+        const expiry=Date.now()+(Number(response.expires_in)||3300)*1000-60000;
+        const driveGranted=window.google.accounts.oauth2.hasGrantedAllScopes(response,SCOPE);
+        const gmailGranted=window.google.accounts.oauth2.hasGrantedAllScopes(response,GMAIL_SCOPE);
+        // Her kullanıcı izni ayrı ayrı geri çevirebilir: kısmi izni başarı gibi gösterme.
+        if(driveGranted){googleToken=response.access_token;googleExpiry=expiry;cloudFileId=null;cloudFolderId=null;syncError='';}
+        if(gmailGranted){gmailToken=response.access_token;gmailExpiry=expiry;mailError='';}
+        render();
+        if(driveGranted && gmailGranted)toast('Drive ve Gmail bağlandı. Eşitleme başlatılıyor.');
+        else if(driveGranted)toast('Drive bağlandı; Gmail izni verilmedi.',true);
+        else if(gmailGranted)toast('Gmail bağlandı; Drive izni verilmedi.',true);
+        else {toast('Drive veya Gmail için erişim izni verilmedi.',true);return;}
+        if(driveGranted)await syncCloud();
+        if(gmailGranted)void sendPendingMail();
+      },
+      error_callback:()=>toast('Google giriş penceresi tamamlanamadı.',true)
+    });
+    // prompt:'' önceki izni yeniden sormaz; yeni bir kapsam gerekiyorsa Google onay gösterir.
+    googleClient.requestAccessToken({prompt:''});
   }
   function disconnectGoogle() {
-    if(googleToken&&window.google?.accounts?.oauth2)window.google.accounts.oauth2.revoke(googleToken,()=>{});
-    googleToken=null;googleExpiry=0;cloudFileId=null;cloudFolderId=null;syncError='';render();toast('Drive bağlantısı kesildi. Yerel notlar silinmedi.');
+    // Birleşik erişim anahtarı iki hizmete de yetki verebilir; bunu açıkça belirt.
+    const tokens=[...new Set([googleToken,gmailToken].filter(Boolean))];
+    if(window.google?.accounts?.oauth2)for(const token of tokens)window.google.accounts.oauth2.revoke(token,()=>{});
+    googleToken=null;googleExpiry=0;gmailToken=null;gmailExpiry=0;
+    cloudFileId=null;cloudFolderId=null;syncError='';mailError='';
+    render();toast('Google Drive ve Gmail erişimi kesildi. Yerel notlar silinmedi.');
   }
   async function driveRequest(url,opts={}) {
     if(!googleToken || Date.now()>=googleExpiry)throw Error('Google oturumu süresi doldu. Tekrar bağlan.');

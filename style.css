@@ -46,3 +46,16 @@
 @media (forced-colors:active){
   .side-custom{scrollbar-width:auto;scrollbar-color:auto}
 }
+
+.password-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.password-toolbar .search{flex:0 1 332px;min-width:min(225px,100%)}
+.password-entry{align-items:center}
+.password-entry-main{min-width:0;overflow-wrap:anywhere}
+.password-entry-main p{margin-bottom:5px}
+.password-value{margin-top:6px;color:#694536;font:13px/1.4 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.password-mask{letter-spacing:.12em}
+.password-actions{flex:0 0 auto;flex-wrap:wrap}
+@media(max-width:680px){
+  .password-toolbar .search{flex:1 1 155px;min-width:0}
+  .password-entry .password-actions{margin-top:10px}
+}

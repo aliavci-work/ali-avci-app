@@ -13,6 +13,10 @@
   const CLIENT_STORE = 'kendime-google-client-id';
   const FOLDER_NAME = 'Kendime Uygulamalar';
   const FILE_NAME = 'kendime-kasa-v2.json';
+  // Ayrı, şifreli bölüm: eski sürümler kendi not yedeğini yazınca parolaları silemez.
+  const PASSWORD_STORE = 'kendime-passwords-encrypted-v1';
+  const PASSWORD_FILE = 'kendime-sifreler-v1.json';
+  const PASSWORD_FORMAT = 'kendime-passwords-v1';
   const SCOPE = 'https://www.googleapis.com/auth/drive.file';
   const DB_NAME = 'kendime-db';
   const STUDY_STATUSES = [
@@ -60,6 +64,14 @@
   let gmailExpiry = 0;
   let mailSending = false;
   let mailError = '';
+  let passwordSession = null;
+  let passwordRecords = [];
+  let passwordStoreError = false;
+  let passwordTaskChain = Promise.resolve();
+  let passwordQuery = '';
+  let passwordDraft = null;
+  let visiblePassword = null;
+  let passwordHideTimer = null;
 
 
   function localDate(d) {
@@ -104,6 +116,178 @@
     const key=await deriveKey(password,salt);
     const bytes=await crypto.subtle.decrypt({name:'AES-GCM',iv:base64ToBytes(envelope.iv)},key,base64ToBytes(envelope.ciphertext));
     return {value:JSON.parse(new TextDecoder().decode(bytes)),key,salt};
+  }
+
+  function passwordSnapshot(records) { return {format:PASSWORD_FORMAT,records}; }
+  function readPasswordSnapshot(value) {
+    if(value?.format!==PASSWORD_FORMAT || !Array.isArray(value.records))throw Error('Şifrelerim yedeği uyumsuz. Üzerine yazılmadı.');
+    return value.records.map(record=>{
+      const {id,updatedAt,deletedAt,service,username,secret}=record??{};
+      if(typeof id!=='string' || !id || id.length>100 || typeof updatedAt!=='string' || !Number.isFinite(Date.parse(updatedAt)))
+        throw Error('Şifrelerim yedeğinde geçersiz kayıt var. Üzerine yazılmadı.');
+      if(deletedAt===updatedAt)return {id,updatedAt,deletedAt};
+      if(deletedAt || typeof service!=='string' || !service.trim() || service.length>120 ||
+          typeof username!=='string' || username.length>254 || typeof secret!=='string' || !secret || secret.length>512)
+        throw Error('Şifrelerim yedeğinde geçersiz kayıt var. Üzerine yazılmadı.');
+      return {id,updatedAt,service,username,secret};
+    });
+  }
+  function mergePasswords(...lists) {
+    const rows=new Map();
+    for(const list of lists)for(const row of list){
+      const old=rows.get(row.id);
+      if(!old || row.updatedAt>old.updatedAt || (row.updatedAt===old.updatedAt &&
+          (Number(Boolean(row.deletedAt))>Number(Boolean(old.deletedAt)) ||
+           (Boolean(row.deletedAt)===Boolean(old.deletedAt) && JSON.stringify(row)>JSON.stringify(old)))))rows.set(row.id,row);
+    }
+    return [...rows.values()].sort((a,b)=>a.id.localeCompare(b.id));
+  }
+  const passwordRow = id => passwordRecords.find(x=>x.id===id && !x.deletedAt);
+  const passwordSessionActive = session => Boolean(session && session===passwordSession && unlocked);
+  function resetPasswordSession() {
+    hidePassword();
+    passwordSession=null;passwordRecords=[];passwordQuery='';passwordDraft=null;passwordStoreError=false;
+    passwordTaskChain=Promise.resolve();
+  }
+  async function openPasswordSession() {
+    const key=vaultKey,salt=vaultSalt;
+    resetPasswordSession();
+    try {
+      const encrypted=await idbGet(PASSWORD_STORE);
+      const records=encrypted===undefined?[]:readPasswordSnapshot((await unsealData(encrypted,vaultPassword)).value);
+      if(!unlocked || key!==vaultKey)return;
+      passwordRecords=mergePasswords(records);passwordSession={key,salt};
+    }catch{
+      if(unlocked && key===vaultKey)passwordStoreError=true;
+    }
+  }
+  function passwordTask(session,operation) {
+    const task=passwordTaskChain.then(()=>{if(passwordSessionActive(session))return operation();});
+    passwordTaskChain=task.catch(()=>{});
+    return task;
+  }
+  async function persistPasswords(session,records) {
+    if(!passwordSessionActive(session))return false;
+    const sealed=await sealData(passwordSnapshot(records),session.key,session.salt);
+    if(!passwordSessionActive(session))return false;
+    await idbPut(PASSWORD_STORE,sealed);
+    if(!passwordSessionActive(session))return false;
+    passwordRecords=records;
+    return true;
+  }
+
+  function passwordList() {
+    const entries=passwordRecords.filter(x=>!x.deletedAt);
+    if(!entries.length)return empty('Henüz şifre kaydı yok.','İlk site veya uygulamanı ekle.');
+    const needle=searchKey(passwordQuery.trim());
+    const filtered=entries.filter(x=>!needle || searchKey(x.service).includes(needle) || searchKey(x.username).includes(needle));
+    if(!filtered.length)return empty('Eşleşen kayıt yok.');
+    filtered.sort((a,b)=>a.service.localeCompare(b.service,'tr') || a.username.localeCompare(b.username,'tr'));
+    return filtered.map(record=>`<article class="list-entry password-entry">
+      <div class="password-entry-main"><h3>${safe(record.service)}</h3>
+      ${record.username?`<p>${safe(record.username)}</p>`:''}
+      <div class="password-value"><span class="password-mask" data-password-mask>••••••••</span></div></div>
+      <div class="card-actions password-actions">
+        <button type="button" class="mini-button" data-action="show-password" data-id="${safe(record.id)}" aria-pressed="false">Göster</button>
+        <button type="button" class="mini-button" data-action="copy-password" data-id="${safe(record.id)}">Kopyala</button>
+        <button type="button" class="mini-button" data-action="edit-password" data-id="${safe(record.id)}">Düzenle</button>
+      </div></article>`).join('');
+  }
+  function renderPasswords() {
+    const heading=head('Şifrelerim','Site ve uygulama girişlerini yönetin.');
+    if(!passwordSession)return heading+empty(passwordStoreError?'Cihazdaki şifreli kayıtlar açılamadı.':'Şifrelerim kilitli.',
+      passwordStoreError?'Mevcut kayıtların üzerine yazılmadı.':'Uygulamanın kilidi açıldığında erişilebilir.');
+    return `${heading}<div class="password-toolbar">
+      <input type="search" class="search" id="password-search" maxlength="254" value="${safe(passwordQuery)}" placeholder="Ara" aria-label="Site veya kullanıcı adı ara" autocomplete="off">
+      <button type="button" class="button primary" data-action="new-password">＋ Yeni şifre</button></div>
+      <div class="list" id="password-rows">${passwordList()}</div>
+      <p class="hint">Şifreler cihazda ve Drive yedeğinde şifreli saklanır. E-postaya veya şifresiz JSON çıktısına eklenmez.</p>`;
+  }
+  function hidePassword() {
+    clearTimeout(passwordHideTimer);passwordHideTimer=null;
+    if(!visiblePassword)return;
+    const {field,button}=visiblePassword;
+    field.textContent='••••••••';field.classList.add('password-mask');
+    button.textContent='Göster';button.setAttribute('aria-pressed','false');
+    visiblePassword=null;
+  }
+  function showPassword(id,button) {
+    if(!passwordSession || !unlocked || route!=='passwords')return;
+    const wasVisible=visiblePassword?.button===button;
+    hidePassword();if(wasVisible)return;
+    const record=passwordRow(id),field=button.closest('.password-entry')?.querySelector('[data-password-mask]');
+    if(!record || !field)return;
+    visiblePassword={field,button};field.classList.remove('password-mask');field.textContent=record.secret;
+    button.textContent='Gizle';button.setAttribute('aria-pressed','true');
+    passwordHideTimer=setTimeout(hidePassword,20000);
+  }
+  async function copyPassword(id) {
+    if(!passwordSession || !unlocked || route!=='passwords')return;
+    const record=passwordRow(id);if(!record)return;
+    try{await navigator.clipboard.writeText(record.secret);toast('Parola panoya kopyalandı.');}
+    catch{toast('Panoya kopyalanamadı. Tarayıcı izinlerini kontrol edin.',true);}
+  }
+  function passwordEditor(id='') {
+    if(!passwordSession || !unlocked || route!=='passwords')return;
+    const record=passwordRow(id);if(id && !record)return;
+    hidePassword();
+    showEditor(`${formHead(record?'Şifreyi düzenle':'Yeni şifre')}<form id="password-form" method="post" autocomplete="off">
+      <label class="field-label" for="password-service">Site veya uygulama adı</label>
+      <input type="text" class="field" id="password-service" name="service" maxlength="120" required value="${safe(record?.service||'')}">
+      <label class="field-label" for="password-username">Kullanıcı adı (isteğe bağlı)</label>
+      <input type="text" class="field" id="password-username" name="username" maxlength="254" spellcheck="false" autocapitalize="none" value="${safe(record?.username||'')}">
+      <label class="field-label" for="password-secret">Parola</label>
+      <input type="password" class="field" id="password-secret" name="secret" maxlength="512" autocomplete="new-password" spellcheck="false" ${record?'aria-describedby="password-edit-hint"':'required'}>
+      ${record?'<small class="hint" id="password-edit-hint">Boş bırakırsanız mevcut parola korunur.</small>':''}
+      <div class="dialog-actions">
+        ${record?`<button type="button" class="button danger" data-action="delete-password" data-id="${safe(record.id)}">Sil</button>`:''}
+        <button type="button" class="button" data-action="close-dialog">Vazgeç</button>
+        <button type="submit" class="button primary">Kaydet</button></div></form>`);
+    passwordDraft={id:record?.id||'',updatedAt:record?.updatedAt};
+  }
+  async function submitPassword(form) {
+    const session=passwordSession,draft=passwordDraft;
+    if(!passwordSessionActive(session) || route!=='passwords' || !draft || draft.busy)return;
+    const {service:rawService,username:rawUser,secret}=formData(form);
+    const service=String(rawService??'').trim(),username=String(rawUser??'').trim();
+    if(!service || service.length>120 || username.length>254 || typeof secret!=='string' || secret.length>512 || (!draft.id && !secret)){
+      toast('Site adını ve yeni kayıt için parolayı girin.',true);return;
+    }
+    draft.busy=true;
+    const submit=form.querySelector('button[type=submit]');if(submit)submit.disabled=true;
+    try{
+      const saved=await passwordTask(session,async()=>{
+        const old=passwordRow(draft.id);
+        if(draft.id && old?.updatedAt!==draft.updatedAt)throw Error('Kayıt eşitleme sırasında değişti. Düzenleme ekranını yeniden açın.');
+        const row={id:old?.id||uid(),updatedAt:metadataStamp(old,stamp()),service,username,secret:secret||old.secret};
+        return persistPasswords(session,mergePasswords(passwordRecords,[row]));
+      });
+      if(saved && passwordSessionActive(session)){
+        if(passwordDraft===draft)closeEditor();
+        scheduleSync();render();toast('Şifre cihazda şifreli kaydedildi.');
+      }
+    }catch(err){
+      if(passwordSessionActive(session))toast(err.name==='Error' && err.message.startsWith('Kayıt eşitleme')?err.message:'Şifre kaydedilemedi. Tekrar deneyin.',true);
+    }finally{draft.busy=false;if(submit)submit.disabled=false;}
+  }
+  async function deletePassword(id) {
+    const session=passwordSession,draft=passwordDraft,record=passwordRow(id);
+    if(!passwordSessionActive(session) || route!=='passwords' || !record || draft?.busy)return;
+    if(!confirm(`“${record.service}” şifre kaydı silinsin mi?`))return;
+    if(draft)draft.busy=true;
+    try{
+      const saved=await passwordTask(session,async()=>{
+        const current=passwordRow(id);
+        if(!current || current.updatedAt!==record.updatedAt)throw Error('Kayıt değişti.');
+        const now=metadataStamp(current,stamp());
+        return persistPasswords(session,mergePasswords(passwordRecords,[{id,updatedAt:now,deletedAt:now}]));
+      });
+      if(saved && passwordSessionActive(session)){
+        if(passwordDraft===draft)closeEditor();
+        scheduleSync();render();toast('Şifre kaydı silindi.');
+      }
+    }catch{if(passwordSessionActive(session))toast('Şifre silinemedi. Kayıt listesini yenileyip tekrar deneyin.',true);}
+    finally{if(draft)draft.busy=false;}
   }
   function showAuth() {
     const setup=loginMode==='setup';
@@ -151,12 +335,14 @@
         vaultSalt=result.salt;vaultKey=result.key;vaultPassword=v.password;
         isStorageReady=true;unlocked=true;
       }
+      await openPasswordSession();
       route='home';authBusy=false;render();
       toast(loginMode==='setup'?'Şifreli kasa oluşturuldu.':'Giriş başarılı.');
       // Aynı açık sekmede hâlâ geçerli yetkiler varsa yeniden Google penceresi açmadan devam et.
       if(googleToken && Date.now()<googleExpiry) void syncCloud();
       if(gmailToken && Date.now()<gmailExpiry) void sendPendingMail();
     } catch(err) {
+      resetPasswordSession();
       unlocked=false;isStorageReady=false;state=EMPTY_STATE();vaultKey=null;vaultPassword=null;
       authMessage=err.name==='OperationError'?'Parola yanlış veya şifreli kayıt açılamadı.':(err.message||'Giriş başarısız.');
       authBusy=false;showAuth();
@@ -164,6 +350,8 @@
   }
   async function lockApp() {
     if(!unlocked)return;
+    resetPasswordSession();
+    closeEditor();
     try {await localSaveChain;}catch{}
     // Kilitle: yalnızca şifreli kasa oturumunu bitir. Google izinlerini iptal ETME.
     // Token'lar sadece bu açık sekmenin belleğindedir; sekme kapanırsa kaybolurlar.
@@ -253,7 +441,7 @@
     changed();toast('Kayıt silindi.');
   }
   function clearNoteFilters() { searchText='';activeCategory='all';activeTag='';activeStatus=''; }
-  function navigate(next) { route=next; drawerOpen=false;clearNoteFilters();window.scrollTo(0,0);render(); }
+  function navigate(next) { hidePassword();passwordQuery='';route=next;drawerOpen=false;clearNoteFilters();window.scrollTo(0,0);render(); }
   function navItem(id,label,icon) {
     return `<button type="button" class="nav-item ${route===id?'active':''}" data-action="nav" data-id="${safe(id)}"><span class="nav-icon">${safe(icon)}</span><span class="nav-label">${safe(label)}</span></button>`;
   }
@@ -274,6 +462,7 @@
           ${navItem('home','Ana Sayfa','⌂')}
           ${navItem('notes','Notlarım','▤')}
           ${navItem('calendar','Takvimim','▦')}
+          ${navItem('passwords','Şifrelerim','🔒')}
         </div>
         <div class="side-title"><span>Özel Menüler</span><button type="button" class="icon-button" data-action="new-menu" title="Yeni menü">＋</button></div>
         <div class="side-links side-custom">${live('menus').sort((a,b)=>(a.title||'').localeCompare(b.title||'','tr')).map(m=>navItem(`menu:${m.id}`,m.title,m.icon||'◈')).join('') || '<p class="hint" style="padding:0 13px">Henüz özel menü yok.</p>'}</div>
@@ -418,23 +607,25 @@
         <p class="hint">Bekleyen gönderi: ${state.outbox.length}. Tarayıcı kapalıyken gönderim gerçekleşmez. E-postalar gönderilemediğinde kuyrukta kalır. Gmail API etkinleştirilmelidir.</p>
         <div class="top-actions"><button class="button primary" data-action="connect-gmail">Gmail gönderme izni ver</button><button class="button" data-action="send-pending">Bekleyenleri gönder</button></div>
         ${mailError?`<p style="color:#b53028;font-size:12px">Son gönderim hatası: ${safe(mailError)}</p>`:''}
-      </section><section class="settings-block"><h2>Yedek & geri yükleme</h2><p>JSON dışa aktarma ve içe alma yapılabilir. <strong>İndirilen JSON dosyası şifreli değildir.</strong> Yedek dosyasını güvenli yerde tutun.</p>
+      </section><section class="settings-block"><h2>Yedek & geri yükleme</h2><p>JSON dışa aktarma ve içe alma yapılabilir. <strong>İndirilen JSON dosyası şifreli değildir ve Şifrelerim kayıtlarını içermez.</strong> Şifreler Drive’a ayrı bir şifreli dosyada yedeklenir.</p>
         <div class="top-actions"><button class="button" data-action="export">↓ JSON yedeğini indir</button><button class="button" data-action="import">↑ JSON içe aktar</button></div>
         <input id="import-file" type="file" accept=".json,application/json" class="hidden">
         <p class="hint">İçe aktarma kayıt kimliklerine göre birleştirilir. Şifreli Drive kasası için aynı parola gerekir.</p>
       </section><section class="settings-block"><h2>Bu sürümde neler var?</h2><p>Notlar ve kategoriler, özel menü/sayfalar, aylık takvim, cihazda çevrimdışı kayıt, Drive eşitleme, Android PWA yükleme ve JSON yedek.</p><p><strong>Sınırlar:</strong> Bu parola bir sunucu hesabı değildir; şifreli kasanın anahtarıdır. E-posta gönderimi yalnızca Gmail bağlantısı açıkken mümkündür. Dosya ekleri, Google Takvim ve tarayıcı kapalıyken eşitleme henüz yoktur.</p></section></div>`;
   }
   function render() {
+    hidePassword();
     if(!isStorageReady || !unlocked) {showAuth();return;}
-    const main=route==='home'?renderHome():route==='notes'?renderNotes():route==='calendar'?renderCalendar():route==='settings'?renderSettings():route.startsWith('menu:')?renderNotes(route.slice(5)):renderHome();
+    const main=route==='home'?renderHome():route==='notes'?renderNotes():route==='calendar'?renderCalendar():route==='passwords'?renderPasswords():route==='settings'?renderSettings():route.startsWith('menu:')?renderNotes(route.slice(5)):renderHome();
     const focused=document.activeElement;
-    const restoreSearch=focused?.id==='search' && main.includes('id="search"');
+    const searchId=focused?.id;
+    const restoreSearch=['search','password-search'].includes(searchId) && main.includes(`id="${searchId}"`);
     const selection=restoreSearch?[focused.selectionStart,focused.selectionEnd]:null;
-    app.innerHTML=`<div class="shell">${sidebar()}<main class="main">${topbar()}${main}<div class="about">Ali Avcı v1.2.5 · Şifreli yerel kayıt · Şifreli Google Drive yedeği · İzinli Gmail gönderimi.</div></main></div>`;
-    if(restoreSearch){const search=document.getElementById('search');search?.focus({preventScroll:true});if(selection[0]!==null)search?.setSelectionRange(...selection);}
+    app.innerHTML=`<div class="shell">${sidebar()}<main class="main">${topbar()}${main}<div class="about">Ali Avcı v1.2.6 · Şifreli yerel kayıt · Şifreli Google Drive yedeği · İzinli Gmail gönderimi.</div></main></div>`;
+    if(restoreSearch){const search=document.getElementById(searchId);search?.focus({preventScroll:true});if(selection[0]!==null)search?.setSelectionRange(...selection);}
   }
   function showEditor(html) { dialogBody.innerHTML=html;dialog.showModal();setTimeout(()=>dialog.querySelector('input:not([type=hidden]),textarea')?.focus(),40); }
-  function closeEditor(){dialog.close();dialogBody.innerHTML='';noteDraft=null;}
+  function closeEditor(){dialog.close();dialogBody.innerHTML='';noteDraft=null;passwordDraft=null;}
   function formHead(title){return `<div class="dialog-header"><h2>${safe(title)}</h2><button class="button ghost" type="button" data-action="close-dialog">✕</button></div>`;}
   function noteEditor(id=null,menuId=null) {
     const n=id?find('notes',id):null;
@@ -511,6 +702,7 @@
   document.addEventListener('submit',e=>{
     const f=e.target;const formId=f.getAttribute('id');
     if(formId==='auth-form'){e.preventDefault();void submitAuth(f);return;}
+    if(formId==='password-form'){e.preventDefault();if(unlocked)void submitPassword(f);return;}
     if(!unlocked){e.preventDefault();return;}if(!formId || !['note-form','category-form','menu-form','event-form'].includes(formId)) return;
     e.preventDefault();const v=formData(f);const id=v.id||uid();
     if(formId==='note-form') {
@@ -542,6 +734,11 @@
         case 'new-event':eventEditor();break;
         case 'edit-event':eventEditor(id);break;
         case 'delete-event':remove('events',id);break;
+        case 'new-password':passwordEditor();break;
+        case 'edit-password':passwordEditor(id);break;
+        case 'delete-password':await deletePassword(id);break;
+        case 'show-password':showPassword(id,el);break;
+        case 'copy-password':await copyPassword(id);break;
         case 'close-dialog':closeEditor();break;
         case 'filter':activeCategory=id;render();break;
         case 'clear-note-filters':clearNoteFilters();render();document.getElementById('search')?.focus();break;
@@ -564,7 +761,12 @@
   });
   document.addEventListener('input',e=>{
     if(unlocked && e.target.id==='search') {searchText=e.target.value;updateNoteSearch();}
+    if(passwordSession && unlocked && route==='passwords' && e.target.id==='password-search'){
+      hidePassword();passwordQuery=e.target.value;
+      document.getElementById('password-rows').innerHTML=passwordList();
+    }
   });
+  dialog.addEventListener('cancel',e=>{if(passwordDraft){e.preventDefault();closeEditor();}});
   document.addEventListener('change',async e=>{
     if(!unlocked)return;
     if(e.target.id==='filter-note-tag'){activeTag=e.target.value;updateNoteSearch();return;}
@@ -755,9 +957,9 @@
     cloudFolderId=folder.id;
     return folder.id;
   }
-  async function createJSONFile(folderId,data) {
+  async function createJSONFile(folderId,data,fileName=FILE_NAME) {
     const boundary=`kendime_${uid().replace(/-/g,'')}`;
-    const metadata=JSON.stringify({name:FILE_NAME,mimeType:'application/json',parents:[folderId]});
+    const metadata=JSON.stringify({name:fileName,mimeType:'application/json',parents:[folderId]});
     const body=new Blob([
       `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`,
       `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(data)}\r\n--${boundary}--\r\n`
@@ -768,6 +970,39 @@
     return driveRequest(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(id)}?uploadType=media&fields=id,modifiedTime`,{method:'PATCH',headers:{'Content-Type':'application/json; charset=UTF-8'},body:JSON.stringify(data)});
   }
   async function getJSONFile(id) {return driveRequest(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(id)}?alt=media`);}
+  async function syncPasswordBackup(folder,session,token) {
+    const active=()=>passwordSessionActive(session) && driveReady() && googleToken===token;
+    if(!active())return;
+    await passwordTask(session,async()=>{
+      if(!active())return;
+      try{
+        const files=await listDrive(`name = '${PASSWORD_FILE}' and '${folder}' in parents and trashed = false`);
+        if(!active())return;
+        files.sort((a,b)=>a.id.localeCompare(b.id));
+        let primaryRows=[],remoteRows=[];
+        for(const file of files){
+          const envelope=await getJSONFile(file.id);
+          if(!active())return;
+          const rows=mergePasswords(readPasswordSnapshot((await unsealData(envelope,vaultPassword)).value));
+          if(!active())return;
+          if(file===files[0])primaryRows=rows;
+          remoteRows=mergePasswords(remoteRows,rows);
+        }
+        const combined=mergePasswords(passwordRecords,remoteRows);
+        const canonicalPasswords=JSON.stringify(combined);
+        if(canonicalPasswords!==JSON.stringify(passwordRecords)){
+          if(!await persistPasswords(session,combined) || !active())return;
+        }
+        if(canonicalPasswords===JSON.stringify(primaryRows))return;
+        const envelope=await sealData(passwordSnapshot(combined),session.key,session.salt);
+        if(!active())return;
+        if(files[0])await saveJSONFile(files[0].id,envelope);
+        else await createJSONFile(folder,envelope,PASSWORD_FILE);
+      }catch{
+        if(active())throw Error('Şifrelerim Drive yedeği eşitlenemedi. Drive bağlantısını ve uygulama parolasını kontrol edin.');
+      }
+    });
+  }
   function scheduleSync() {
     if(!googleToken || Date.now()>=googleExpiry)return;
     clearTimeout(syncTimer);syncTimer=setTimeout(()=>void syncCloud(),1800);
@@ -778,6 +1013,7 @@
     if(!navigator.onLine) {syncError='Çevrimdışı. Veriler şifreli olarak cihazda saklandı.';render();return;}
     if(syncInProgress){syncAgain=true;return;}
     syncInProgress=true;syncAgain=false;
+    const passwordLogin=passwordSession, syncToken=googleToken;
     try {
       const folder=await ensureFolder();
       if(!cloudFileId){
@@ -808,6 +1044,7 @@
         }
         state=mergeStates(state,combined);await saveLocal();
       }
+      await syncPasswordBackup(folder,passwordLogin,syncToken);
       syncError='';lastSync=stamp();render();
     } catch(err){
       syncError=err.name==='OperationError'?'Drive kasası açılamadı: Parolalar farklı olabilir. Üzerine yazılmadı.':(err.message||String(err));
@@ -825,6 +1062,9 @@
     if('serviceWorker' in navigator && (location.protocol==='https:'||location.hostname==='localhost'))navigator.serviceWorker.register('./sw.js').catch(()=>{});
     window.addEventListener('online',()=>{if(unlocked){toast('Bağlantı geri geldi.');scheduleSync();void sendPendingMail();}});
     window.addEventListener('offline',()=>{if(unlocked)toast('Çevrimdışı. Kayıtlar cihazda şifreli tutulacak.');});
+    window.addEventListener('blur',hidePassword);
+    window.addEventListener('pagehide',()=>{hidePassword();if(passwordDraft)closeEditor();});
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)hidePassword();});
     document.addEventListener('visibilitychange',()=>{if(!document.hidden && unlocked){if(googleToken&&Date.now()<googleExpiry)scheduleSync();void sendPendingMail();}});
     setInterval(()=>{if(!document.hidden && unlocked){if(googleToken&&Date.now()<googleExpiry)void syncCloud();if(gmailToken&&Date.now()<gmailExpiry)void sendPendingMail();}},60000);
   }

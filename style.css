@@ -11,3 +11,19 @@
 .auth-info{font-size:12px;line-height:1.65;color:#997c68;margin:24px 0 0}.auth-error{padding:11px;border-radius:9px;color:#9d3027;background:#fff0e8;font-size:13px}
 .compact-hero{min-height:130px;gap:16px}.compact-hero h2{font-size:29px;margin-top:9px}.hero-actions{display:flex;flex-wrap:wrap;gap:9px}
 @media(max-width:680px){.auth-card{padding:24px}.auth-card h1{font-size:34px}.hero-actions{width:100%}.hero-actions .button{flex:1;min-width:115px}}
+
+/* Çalışma notları */
+.note-filter-bar{display:flex;align-items:end;flex-wrap:wrap;gap:10px;padding:12px 14px;margin:0 0 18px;border:1px solid #ddc9aa;border-radius:13px;background:#f6eddf}
+.note-filter-field{min-width:0;flex:0 1 190px;display:grid;gap:5px;font-size:12px;font-weight:800;color:#704a3e}
+.note-filter-field .field{min-width:0;padding:9px 10px;font-size:13px}
+.note-filter-bar .button{padding:9px 12px}
+.note-count{color:#755747;font-size:12px;margin:0 0 9px auto}
+.note-meta{display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin:10px 0 0}
+.note-badge{border-radius:999px;padding:4px 8px;font-size:11px;font-weight:750;overflow-wrap:anywhere;max-width:100%;border:1px solid transparent}
+.note-badge--tag{background:#fff7e9;color:#62483d;border-color:#dbc7a7}
+.note-badge--review{background:#fff1cd;color:#654506;border-color:#dac087}
+.note-badge--apply{background:#e0ebf7;color:#304c68;border-color:#bacee2}
+.note-badge--done{background:#e3efdf;color:#325738;border-color:#b9cdb3}
+.note-editor-meta{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:12px}
+.note-editor-meta .hint{display:block;margin-top:5px}
+@media(max-width:680px){.note-filter-field{flex:1 1 130px}.note-editor-meta{grid-template-columns:minmax(0,1fr);gap:0}}

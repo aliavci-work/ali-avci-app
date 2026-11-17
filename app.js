@@ -15,6 +15,12 @@
   const FILE_NAME = 'kendime-kasa-v2.json';
   const SCOPE = 'https://www.googleapis.com/auth/drive.file';
   const DB_NAME = 'kendime-db';
+  const STUDY_STATUSES = [
+    ['review', 'Tekrar Edilecek'],
+    ['apply', 'Uygulanacak'],
+    ['done', 'Tamamlandı']
+  ];
+  const STATUS_LABELS = new Map(STUDY_STATUSES);
   const app = document.getElementById('app');
   const dialog = document.getElementById('editor');
   const dialogBody = document.getElementById('editor-content');
@@ -23,6 +29,9 @@
   let route = 'home';
   let activeCategory = 'all';
   let searchText = '';
+  let activeTag = '';
+  let activeStatus = '';
+  let noteDraft = null;
   let calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
   let selectedDate = localDate(new Date());
   let drawerOpen = false;
@@ -224,9 +233,9 @@
     host.append(el);
     setTimeout(()=>el.remove(),4700);
   }
-  function upsert(type,entry) {
+  function upsert(type,entry,touch=true) {
     const at=state[type].findIndex(x=>x.id===entry.id);
-    const obj={...entry,updatedAt:stamp()};
+    const obj=touch?{...entry,updatedAt:stamp()}:entry;
     if(at>=0) state[type][at]=obj; else state[type].push(obj);
     changed();
   }
@@ -243,9 +252,10 @@
     if(activeCategory===id) activeCategory='all';
     changed();toast('Kayıt silindi.');
   }
-  function navigate(next) { route=next; drawerOpen=false;searchText='';activeCategory='all';window.scrollTo(0,0);render(); }
+  function clearNoteFilters() { searchText='';activeCategory='all';activeTag='';activeStatus=''; }
+  function navigate(next) { route=next; drawerOpen=false;clearNoteFilters();window.scrollTo(0,0);render(); }
   function navItem(id,label,icon) {
-    return `<button type="button" class="nav-item ${route===id?'active':''}" data-action="nav" data-id="${safe(id)}"><span class="nav-icon">${icon}</span><span class="nav-label">${safe(label)}</span></button>`;
+    return `<button type="button" class="nav-item ${route===id?'active':''}" data-action="nav" data-id="${safe(id)}"><span class="nav-icon">${safe(icon)}</span><span class="nav-label">${safe(label)}</span></button>`;
   }
   const driveReady = () => Boolean(googleToken && Date.now()<googleExpiry);
   const gmailReady = () => Boolean(gmailToken && Date.now()<gmailExpiry);
@@ -282,10 +292,27 @@
   function empty(text,sub='',action='',label='') {
     return `<div class="empty"><strong>${safe(text)}</strong><div>${safe(sub)}</div>${action?`<button type="button" class="button primary" style="margin-top:16px" data-action="${safe(action)}">＋ ${safe(label)}</button>`:''}</div>`;
   }
+  // Search Turkish and English text without case or dotted-I surprises.
+  const searchKey = v => String(v??'').normalize('NFC').toLocaleLowerCase('tr-TR').replace(/ı/g,'i');
+  const tagKey = searchKey;
+  function cleanTags(items) {
+    const tags=new Map();
+    for(const raw of Array.isArray(items)?items:[]) {
+      if(typeof raw!=='string')continue;
+      const tag=Array.from(raw.normalize('NFC').trim().replace(/^#+\s*/, '').replace(/\s+/g,' ')).slice(0,30).join('').trim();
+      if(tag && !tags.has(tagKey(tag)))tags.set(tagKey(tag),tag);
+      if(tags.size===8)break;
+    }
+    return Array.from(tags.values());
+  }
+  const noteTags = n => cleanTags(n?.studyTags?.values);
+  const noteStatus = n => STATUS_LABELS.has(n?.studyStatus?.value)?n.studyStatus.value:'';
   function cardForNote(n) {
     const cat=find('categories',n.categoryId);
+    const status=noteStatus(n),tags=noteTags(n);
     return `<article class="card"><div class="eyebrow">${cat ? safe(cat.name) : (n.menuId?'ÖZEL SAYFA':'NOT')}</div>
        <h3 class="card-title">${safe(n.title || 'Başlıksız')}</h3><p class="card-text">${safe(trimText(n.content,155) || 'İçerik yok')}</p>
+       ${status||tags.length?`<div class="note-meta">${status?`<span class="note-badge note-badge--${status}">${STATUS_LABELS.get(status)}</span>`:''}${tags.map(tag=>`<span class="note-badge note-badge--tag">#${safe(tag)}</span>`).join('')}</div>`:''}
        <div class="card-foot"><span>${safe(fmtTime(n.updatedAt))}</span><div class="card-actions"><button class="mini-button" data-action="edit-note" data-id="${safe(n.id)}">Düzenle</button><button class="mini-button" data-action="delete-note" data-id="${safe(n.id)}">Sil</button></div></div></article>`;
   }
   function renderHome() {
@@ -300,16 +327,51 @@
       <div class="section-heading"><h2>Yaklaşan planların</h2><a href="#" data-action="nav" data-id="calendar">Takvime git →</a></div>
       ${soon.length?`<div class="list">${soon.map(e=>`<div class="list-entry"><div><div class="date-tag">${safe(dateNice(e.date,{day:'numeric',month:'long',weekday:'long'}))} ${safe(e.time||'')}</div><h3>${safe(e.title)}</h3><p>${safe(trimText(e.description,100))}</p></div><div class="card-actions"><button class="mini-button" data-action="edit-event" data-id="${safe(e.id)}">Düzenle</button></div></div>`).join('')}</div>`:empty('Yaklaşan kayıt bulunmuyor.','Yeni takvim kaydı eklenebilir.','new-event','Etkinlik ekle')}`;
   }
+  const noteScope = menuId => live('notes').filter(n=>menuId?n.menuId===menuId:!n.menuId);
+  const hasNoteFilters = () => Boolean(searchText.trim() || activeCategory!=='all' || activeTag || activeStatus);
+  function filterNotes(all,menuId) {
+    const query=searchKey(searchText.trim());
+    return all.filter(n=>(menuId || activeCategory==='all' || n.categoryId===activeCategory) &&
+      (!activeTag || noteTags(n).some(t=>tagKey(t)===activeTag)) &&
+      (!activeStatus || noteStatus(n)===activeStatus) &&
+      (!query || searchKey(`${n.title||''} ${n.content||''} ${noteTags(n).join(' ')}`).includes(query))).sort(byNewest);
+  }
+  function renderNoteResults(filtered,menuId) {
+    if(filtered.length)return `<div class="cards">${filtered.map(cardForNote).join('')}</div>`;
+    if(hasNoteFilters())return empty('Eşleşen kayıt bulunmadı.','Arama veya filtreleri değiştirip tekrar deneyebilirsin.');
+    return empty('Burada henüz bir şey yok.','Başlamak için yeni bir kayıt oluştur.','new-note',menuId?'Sayfa ekle':'Not ekle');
+  }
+  function noteResultCount(filtered,total) {
+    return hasNoteFilters()?`${filtered.length} / ${total} kayıt`:`${total} kayıt`;
+  }
+  function updateNoteSearch() {
+    const menuId=route.startsWith('menu:')?route.slice(5):null;
+    const all=noteScope(menuId);
+    const filtered=filterNotes(all,menuId);
+    document.getElementById('note-results').innerHTML=renderNoteResults(filtered,menuId);
+    document.getElementById('note-count').textContent=noteResultCount(filtered,all.length);
+    document.getElementById('clear-note-filters').disabled=!hasNoteFilters();
+  }
   function renderNotes(menuId=null) {
     const menu = menuId ? find('menus',menuId) : null;
     const title=menuId?(menu?.title||'Menü bulunamadı'):'Notlarım';
     const subtitle=menuId?'Bu menüye istediğin kadar sayfa ve metin ekleyebilirsin.':'Kategorilerini aç, düzenle ve aradığın notu kolayca bul.';
-    const all=live('notes').filter(n=>menuId?n.menuId===menuId:!n.menuId);
-    const filtered=all.filter(n=>(menuId || activeCategory==='all' || n.categoryId===activeCategory) && (!searchText || `${n.title||''} ${n.content||''}`.toLocaleLowerCase('tr-TR').includes(searchText.toLocaleLowerCase('tr-TR')))).sort(byNewest);
+    const all=noteScope(menuId);
+    const tags=new Map();
+    for(const n of all)for(const tag of noteTags(n))if(!tags.has(tagKey(tag)))tags.set(tagKey(tag),tag);
+    if(activeTag && !tags.has(activeTag))activeTag='';
+    const tagOptions=[...tags].sort((a,b)=>a[1].localeCompare(b[1],'tr'));
+    const filtered=filterNotes(all,menuId);
     return `${head(title,subtitle)}
       <div class="toolbar"><div class="filters">${menuId?'':`<button class="chip ${activeCategory==='all'?'active':''}" data-action="filter" data-id="all">Tümü (${all.length})</button>${live('categories').map(c=>`<button class="chip ${activeCategory===c.id?'active':''}" data-action="filter" data-id="${safe(c.id)}">${safe(c.name)} (${all.filter(x=>x.categoryId===c.id).length})</button>`).join('')}<button class="chip" data-action="new-category">＋ Kategori</button>`}</div>
       <div class="top-actions"><input class="search" id="search" type="search" placeholder="Notlarda ara…" value="${safe(searchText)}" aria-label="Notlarda ara"><button class="button primary" data-action="new-note" data-menu="${safe(menuId||'')}">＋ ${menuId?'Yeni sayfa':'Yeni not'}</button>${menu?`<button class="button" data-action="edit-menu" data-id="${safe(menuId)}">Menüyü düzenle</button>`:''}</div></div>
-      ${filtered.length?`<div class="cards">${filtered.map(cardForNote).join('')}</div>`:empty('Burada henüz bir şey yok.', 'Başlamak için yeni bir kayıt oluştur.', 'new-note',menuId?'Sayfa ekle':'Not ekle')}`;
+      <div class="note-filter-bar">
+        <label class="note-filter-field">Etiket<select id="filter-note-tag" class="field"><option value="">Tüm etiketler</option>${tagOptions.map(([key,label])=>`<option value="${safe(key)}" ${key===activeTag?'selected':''}>${safe(label)}</option>`).join('')}</select></label>
+        <label class="note-filter-field">Not durumu<select id="filter-note-status" class="field"><option value="">Tüm durumlar</option>${STUDY_STATUSES.map(([key,label])=>`<option value="${key}" ${key===activeStatus?'selected':''}>${label}</option>`).join('')}</select></label>
+        <button id="clear-note-filters" class="button" type="button" data-action="clear-note-filters" ${hasNoteFilters()?'':'disabled'}>Filtreleri temizle</button>
+        <span id="note-count" class="note-count" role="status" aria-live="polite">${noteResultCount(filtered,all.length)}</span>
+      </div>
+      <div id="note-results">${renderNoteResults(filtered,menuId)}</div>`;
   }
   function monthGrid() {
     const year=calendarMonth.getFullYear(), month=calendarMonth.getMonth();
@@ -365,19 +427,29 @@
   function render() {
     if(!isStorageReady || !unlocked) {showAuth();return;}
     const main=route==='home'?renderHome():route==='notes'?renderNotes():route==='calendar'?renderCalendar():route==='settings'?renderSettings():route.startsWith('menu:')?renderNotes(route.slice(5)):renderHome();
-    app.innerHTML=`<div class="shell">${sidebar()}<main class="main">${topbar()}${main}<div class="about">Ali Avcı v1.2.2 · Şifreli yerel kayıt · Şifreli Google Drive yedeği · İzinli Gmail gönderimi.</div></main></div>`;
+    const focused=document.activeElement;
+    const restoreSearch=focused?.id==='search' && main.includes('id="search"');
+    const selection=restoreSearch?[focused.selectionStart,focused.selectionEnd]:null;
+    app.innerHTML=`<div class="shell">${sidebar()}<main class="main">${topbar()}${main}<div class="about">Ali Avcı v1.2.3 · Şifreli yerel kayıt · Şifreli Google Drive yedeği · İzinli Gmail gönderimi.</div></main></div>`;
+    if(restoreSearch){const search=document.getElementById('search');search?.focus({preventScroll:true});if(selection[0]!==null)search?.setSelectionRange(...selection);}
   }
   function showEditor(html) { dialogBody.innerHTML=html;dialog.showModal();setTimeout(()=>dialog.querySelector('input:not([type=hidden]),textarea')?.focus(),40); }
-  function closeEditor(){dialog.close();dialogBody.innerHTML='';}
+  function closeEditor(){dialog.close();dialogBody.innerHTML='';noteDraft=null;}
   function formHead(title){return `<div class="dialog-header"><h2>${safe(title)}</h2><button class="button ghost" type="button" data-action="close-dialog">✕</button></div>`;}
   function noteEditor(id=null,menuId=null) {
     const n=id?find('notes',id):null;
     const menu=menuId || n?.menuId || null;
     const categories=live('categories');
+    const category=n?.categoryId||(!id && !menu && route==='notes' && activeCategory!=='all'?activeCategory:null);
+    noteDraft={id:n?.id||'',title:n?.title||'',content:n?.content||'',categoryId:category,menuId:menu,tags:noteTags(n),status:noteStatus(n)};
     showEditor(`${formHead(n?'Kaydı düzenle':menu?'Yeni sayfa':'Yeni not')}<form id="note-form">
       <input type="hidden" name="id" value="${safe(n?.id||'')}"><input type="hidden" name="menuId" value="${safe(menu||'')}">
       <label class="field-label">Başlık</label><input name="title" class="field" maxlength="180" required placeholder="Örneğin: Haftalık plan" value="${safe(n?.title||'')}">
-      ${menu?'':`<label class="field-label">Kategori</label><select class="field" name="categoryId"><option value="">Kategorisiz</option>${categories.map(c=>`<option value="${safe(c.id)}" ${n?.categoryId===c.id?'selected':''}>${safe(c.name)}</option>`).join('')}</select>`}
+      ${menu?'':`<label class="field-label">Kategori</label><select class="field" name="categoryId"><option value="">Kategorisiz</option>${categories.map(c=>`<option value="${safe(c.id)}" ${category===c.id?'selected':''}>${safe(c.name)}</option>`).join('')}</select>`}
+      <div class="note-editor-meta">
+        <div><label class="field-label" for="note-tags">Etiketler</label><input id="note-tags" class="field" name="studyTags" type="text" maxlength="500" aria-describedby="note-tag-hint" placeholder="Örn. gramer, kelime" value="${safe(noteDraft.tags.join(', '))}"><small id="note-tag-hint" class="hint">Virgülle ayır. En çok 8 etiket, her biri en çok 30 karakter.</small></div>
+        <div><label class="field-label" for="note-status">Not durumu</label><select id="note-status" class="field" name="studyStatus"><option value="">Durum yok</option>${STUDY_STATUSES.map(([value,label])=>`<option value="${value}" ${noteDraft.status===value?'selected':''}>${label}</option>`).join('')}</select></div>
+      </div>
       <label class="field-label">İçerik</label><textarea name="content" class="field" rows="11" placeholder="Aklındakileri buraya yaz…">${safe(n?.content||'')}</textarea>
       <div class="dialog-actions"><button class="button" type="button" data-action="close-dialog">Vazgeç</button><button class="button primary" type="submit">Kaydet</button></div></form>`);
   }
@@ -403,16 +475,46 @@
       <div class="dialog-actions"><button class="button" type="button" data-action="close-dialog">Vazgeç</button><button class="button primary" type="submit">Kaydet</button></div></form>`);
   }
   function formData(form) { return Object.fromEntries(new FormData(form).entries()); }
+  const sameTags=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  function metadataStamp(previous,now) {
+    const ms=Date.parse(previous?.updatedAt);
+    return Number.isFinite(ms) && ms>=Date.parse(now) && ms<8640000000000000?new Date(ms+1).toISOString():now;
+  }
+  function applyNoteDraft(v,id) {
+    const draft=noteDraft;
+    const old=v.id?find('notes',id):null;
+    if(!draft || draft.id!==v.id || (v.id && !old)){
+      toast('Not artık düzenlenemiyor. Listeyi yeniden aç.',true);
+      return false;
+    }
+    const title=v.title.trim();
+    if(!title){toast('Not başlığını gir.',true);return false;}
+    const input={title,content:v.content||'',categoryId:v.menuId?null:(v.categoryId||null),menuId:v.menuId||null};
+    const submitTags=cleanTags(String(v.studyTags||'').split(/[,\n]/u));
+    const submitStatus=STATUS_LABELS.has(v.studyStatus)?v.studyStatus:'';
+    const entry={...old,id};
+    for(const key of Object.keys(input)){
+      entry[key]=old && input[key]===draft[key]?old[key]??(key.endsWith('Id')?null:''):input[key];
+    }
+    const bodyChanged=!old || Object.keys(input).some(k=>entry[k] !== (old[k]??(k.endsWith('Id')?null:'')));
+    const tagsChanged=!sameTags(submitTags,draft.tags) && !sameTags(submitTags,noteTags(old));
+    const statusChanged=submitStatus!==draft.status && submitStatus!==noteStatus(old);
+    if(!bodyChanged && !tagsChanged && !statusChanged)return true;
+    const now=stamp();
+    if(tagsChanged)entry.studyTags={values:submitTags,updatedAt:metadataStamp(old?.studyTags,now)};
+    if(statusChanged)entry.studyStatus={value:submitStatus,updatedAt:metadataStamp(old?.studyStatus,now)};
+    if(bodyChanged)state.outbox.push({id:uid(),noteId:id,title:entry.title,content:entry.content,kind:old?'Güncellendi':'Yeni not',savedAt:now});
+    upsert('notes',entry,bodyChanged);
+    if(bodyChanged)void sendPendingMail();
+    return true;
+  }
   document.addEventListener('submit',e=>{
     const f=e.target;const formId=f.getAttribute('id');
     if(formId==='auth-form'){e.preventDefault();void submitAuth(f);return;}
     if(!unlocked){e.preventDefault();return;}if(!formId || !['note-form','category-form','menu-form','event-form'].includes(formId)) return;
     e.preventDefault();const v=formData(f);const id=v.id||uid();
     if(formId==='note-form') {
-      const old=find('notes',id)||{};
-      state.outbox.push({id:uid(),noteId:id,title:v.title.trim(),content:v.content||'',kind:old.id?'Güncellendi':'Yeni not',savedAt:stamp()});
-      upsert('notes',{...old,id,title:v.title.trim(),content:v.content||'',categoryId:v.menuId?null:(v.categoryId||null),menuId:v.menuId||null});
-      void sendPendingMail();
+      if(!applyNoteDraft(v,id))return;
     }
     if(formId==='category-form') {const old=find('categories',id)||{};upsert('categories',{...old,id,name:v.name.trim()});}
     if(formId==='menu-form') {const old=find('menus',id)||{};upsert('menus',{...old,id,title:v.title.trim(),icon:v.icon.trim()||'◈'});route=`menu:${id}`;}
@@ -442,6 +544,7 @@
         case 'delete-event':remove('events',id);break;
         case 'close-dialog':closeEditor();break;
         case 'filter':activeCategory=id;render();break;
+        case 'clear-note-filters':clearNoteFilters();render();document.getElementById('search')?.focus();break;
         case 'select-day':selectedDate=id;render();break;
         case 'today':calendarMonth=new Date(new Date().getFullYear(),new Date().getMonth(),1);selectedDate=localDate(new Date());render();break;
         case 'prev-month':calendarMonth=new Date(calendarMonth.getFullYear(),calendarMonth.getMonth()-1,1);render();break;
@@ -460,15 +563,18 @@
     } catch(err){toast(err.message||'Beklenmeyen hata oluştu.',true);console.error(err);}
   });
   document.addEventListener('input',e=>{
-    if(e.target.id==='search') {searchText=e.target.value;const pos=e.target.selectionStart;render();const target=document.getElementById('search');if(target){target.focus();target.setSelectionRange(pos,pos);}}
+    if(unlocked && e.target.id==='search') {searchText=e.target.value;updateNoteSearch();}
   });
   document.addEventListener('change',async e=>{
+    if(!unlocked)return;
+    if(e.target.id==='filter-note-tag'){activeTag=e.target.value;updateNoteSearch();return;}
+    if(e.target.id==='filter-note-status'){activeStatus=e.target.value;updateNoteSearch();return;}
     if(e.target.id!=='import-file')return;
     const file=e.target.files?.[0];if(!file)return;
     try {
       const content=JSON.parse(await file.text());
       if(!content || content.schema!==1 || !['categories','menus','notes','events'].every(k=>Array.isArray(content[k])))throw Error('Geçerli bir eski sürüm yedeği değil.');
-      if(!confirm('Yedekteki kayıtlar mevcut verilerle birleştirilsin mi?'))return;
+      if(!unlocked || !confirm('Yedekteki kayıtlar mevcut verilerle birleştirilsin mi?'))return;
       state=mergeStates(state,content);changed();toast('Yedek içe aktarıldı.');
     } catch(err){toast(`İçe aktarma başarısız: ${err.message}`,true);}
   });
@@ -478,6 +584,12 @@
     const a=document.createElement('a');a.href=url;a.download=`ali-avci-yedek-${localDate(new Date())}.json`;a.click();
     setTimeout(()=>URL.revokeObjectURL(url),2000);
   }
+  function newerNoteMeta(a,b) {
+    if(!a?.updatedAt)return b;
+    if(!b?.updatedAt)return a;
+    if(a.updatedAt!==b.updatedAt)return a.updatedAt>b.updatedAt?a:b;
+    return JSON.stringify(a)>JSON.stringify(b)?a:b;
+  }
   function mergeStates(one,two) {
     const a=normalize(one),b=normalize(two),result=EMPTY_STATE();
     for(const type of ['categories','menus','notes','events']) {
@@ -485,7 +597,16 @@
       for(const x of [...a[type],...b[type]]) {
         const prev=map.get(x.id);
         // Aynı anda üretilen zaman damgaları için silinmiş kayıt önceliklidir.
-        if(!prev || String(x.updatedAt||'')>String(prev.updatedAt||'') || (String(x.updatedAt||'')===String(prev.updatedAt||'') && x.deletedAt && !prev.deletedAt)) map.set(x.id,x);
+        const bodyWins=!prev || String(x.updatedAt||'')>String(prev.updatedAt||'') || (String(x.updatedAt||'')===String(prev.updatedAt||'') && x.deletedAt && !prev.deletedAt);
+        const winner=bodyWins?x:prev;
+        if(type==='notes' && prev){
+          const merged={...winner};
+          for(const key of ['studyTags','studyStatus']){
+            const metadata=newerNoteMeta(prev[key],x[key]);
+            if(metadata)merged[key]=metadata;
+          }
+          map.set(x.id,merged);
+        } else if(bodyWins)map.set(x.id,winner);
       }
       result[type]=Array.from(map.values()).sort((x,y)=>x.id.localeCompare(y.id));
     }

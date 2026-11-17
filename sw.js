@@ -1,4 +1,4 @@
-const CACHE = 'kendime-v1.2.3';
+const CACHE = 'kendime-v1.2.4';
 const CORE = ['./','./index.html','./style.css','./app.js','./config.js','./manifest.webmanifest','./icons/icon-192.png','./icons/icon-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(CORE)).then(() => self.skipWaiting()));

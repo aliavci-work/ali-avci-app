@@ -430,7 +430,7 @@
     const focused=document.activeElement;
     const restoreSearch=focused?.id==='search' && main.includes('id="search"');
     const selection=restoreSearch?[focused.selectionStart,focused.selectionEnd]:null;
-    app.innerHTML=`<div class="shell">${sidebar()}<main class="main">${topbar()}${main}<div class="about">Ali Avcı v1.2.3 · Şifreli yerel kayıt · Şifreli Google Drive yedeği · İzinli Gmail gönderimi.</div></main></div>`;
+    app.innerHTML=`<div class="shell">${sidebar()}<main class="main">${topbar()}${main}<div class="about">Ali Avcı v1.2.4 · Şifreli yerel kayıt · Şifreli Google Drive yedeği · İzinli Gmail gönderimi.</div></main></div>`;
     if(restoreSearch){const search=document.getElementById('search');search?.focus({preventScroll:true});if(selection[0]!==null)search?.setSelectionRange(...selection);}
   }
   function showEditor(html) { dialogBody.innerHTML=html;dialog.showModal();setTimeout(()=>dialog.querySelector('input:not([type=hidden]),textarea')?.focus(),40); }

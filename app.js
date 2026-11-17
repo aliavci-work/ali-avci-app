@@ -11,6 +11,7 @@
   const KDF_ROUNDS = 310000;
 
   const CLIENT_STORE = 'kendime-google-client-id';
+  const SIDEBAR_PREFERENCE = 'kendime-sidebar-compact';
   const FOLDER_NAME = 'Kendime Uygulamalar';
   const FILE_NAME = 'kendime-kasa-v2.json';
   // Ayrı, şifreli bölüm: eski sürümler kendi not yedeğini yazınca parolaları silemez.
@@ -39,6 +40,7 @@
   let calendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
   let selectedDate = localDate(new Date());
   let drawerOpen = false;
+  let sidebarCompact = readSidebarPreference();
   let googleToken = null;
   let googleExpiry = 0;
   let googleClient = null;
@@ -442,8 +444,24 @@
   }
   function clearNoteFilters() { searchText='';activeCategory='all';activeTag='';activeStatus=''; }
   function navigate(next) { hidePassword();passwordQuery='';route=next;drawerOpen=false;clearNoteFilters();window.scrollTo(0,0);render(); }
+  function readSidebarPreference() {
+    try { return localStorage.getItem(SIDEBAR_PREFERENCE)==='1'; }
+    catch { return false; }
+  }
+  function toggleSidebar(control) {
+    if(!window.matchMedia('(min-width:681px)').matches)return;
+    const sidebar=document.getElementById('app-sidebar');
+    if(!sidebar)return;
+    sidebarCompact=!sidebarCompact;
+    sidebar.classList.toggle('sidebar-compact',sidebarCompact);
+    const label=sidebarCompact?'Sol menüyü genişlet':'Sol menüyü daralt';
+    control.setAttribute('aria-expanded',String(!sidebarCompact));
+    control.setAttribute('aria-label',label);
+    control.setAttribute('title',label);
+    try { localStorage.setItem(SIDEBAR_PREFERENCE,sidebarCompact?'1':'0'); }catch{}
+  }
   function navItem(id,label,icon) {
-    return `<button type="button" class="nav-item ${route===id?'active':''}" data-action="nav" data-id="${safe(id)}"><span class="nav-icon">${safe(icon)}</span><span class="nav-label">${safe(label)}</span></button>`;
+    return `<button type="button" class="nav-item ${route===id?'active':''}" data-action="nav" data-id="${safe(id)}" aria-label="${safe(label)}" title="${safe(label)}"${route===id?' aria-current="page"':''}><span class="nav-icon" aria-hidden="true">${safe(icon)}</span><span class="nav-label">${safe(label)}</span></button>`;
   }
   const driveReady = () => Boolean(googleToken && Date.now()<googleExpiry);
   const gmailReady = () => Boolean(gmailToken && Date.now()<gmailExpiry);
@@ -455,16 +473,22 @@
     return 'Yalnızca cihazda';
   }
   function sidebar() {
+    const toggleLabel=sidebarCompact?'Sol menüyü genişlet':'Sol menüyü daralt';
     return `<div class="overlay ${drawerOpen?'show':''}" data-action="close-drawer"></div>
-      <aside class="sidebar ${drawerOpen?'open':''}">
-        <div class="brand"><div class="brand-icon">AA</div><div><div class="brand-title">Ali Avcı</div><div class="brand-subtitle">kişisel alanım</div></div></div>
+      <aside id="app-sidebar" class="sidebar${drawerOpen?' open':''}${sidebarCompact?' sidebar-compact':''}">
+        <div class="side-brand-row">
+          <div class="brand"><div class="brand-icon">AA</div><div class="side-brand-name"><div class="brand-title">Ali Avcı</div><div class="brand-subtitle">kişisel alanım</div></div></div>
+          <button class="sidebar-toggle" type="button" data-action="toggle-sidebar" aria-controls="app-sidebar" aria-expanded="${!sidebarCompact}" aria-label="${toggleLabel}" title="${toggleLabel}">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="3.5" y="5" width="17" height="14" rx="2.2"/><path d="M9 5v14"/><path class="sidebar-toggle-arrow" d="m15 9.5-2.5 2.5 2.5 2.5"/></svg>
+          </button>
+        </div>
         <div class="side-links">
           ${navItem('home','Ana Sayfa','⌂')}
           ${navItem('notes','Notlarım','▤')}
           ${navItem('calendar','Takvimim','▦')}
           ${navItem('passwords','Şifrelerim','🔒')}
         </div>
-        <div class="side-title"><span>Özel Menüler</span><button type="button" class="icon-button" data-action="new-menu" title="Yeni menü">＋</button></div>
+        <div class="side-title"><span>Özel Menüler</span><button type="button" class="icon-button" data-action="new-menu" aria-label="Yeni menü" title="Yeni menü">＋</button></div>
         <div class="side-links side-custom">${live('menus').sort((a,b)=>(a.title||'').localeCompare(b.title||'','tr')).map(m=>navItem(`menu:${m.id}`,m.title,m.icon||'◈')).join('') || '<p class="hint" style="padding:0 13px">Henüz özel menü yok.</p>'}</div>
         <div class="side-links">${navItem('settings','Ayarlar & Drive','⚙')}</div>
         <div class="side-footer">◉ ${safe(statusText())}<div style="margin-top:6px">${lastSync?`Son eşitleme: ${safe(fmtTime(lastSync))}`:'Kayıtlar cihazda güvenle tutulur.'}</div></div>
@@ -621,7 +645,7 @@
     const searchId=focused?.id;
     const restoreSearch=['search','password-search'].includes(searchId) && main.includes(`id="${searchId}"`);
     const selection=restoreSearch?[focused.selectionStart,focused.selectionEnd]:null;
-    app.innerHTML=`<div class="shell">${sidebar()}<main class="main">${topbar()}${main}<div class="about">Ali Avcı v1.2.6 · Şifreli yerel kayıt · Şifreli Google Drive yedeği · İzinli Gmail gönderimi.</div></main></div>`;
+    app.innerHTML=`<div class="shell">${sidebar()}<main class="main">${topbar()}${main}<div class="about">Ali Avcı v1.2.7 · Şifreli yerel kayıt · Şifreli Google Drive yedeği · İzinli Gmail gönderimi.</div></main></div>`;
     if(restoreSearch){const search=document.getElementById(searchId);search?.focus({preventScroll:true});if(selection[0]!==null)search?.setSelectionRange(...selection);}
   }
   function showEditor(html) { dialogBody.innerHTML=html;dialog.showModal();setTimeout(()=>dialog.querySelector('input:not([type=hidden]),textarea')?.focus(),40); }
@@ -721,6 +745,7 @@
     try {
       switch(a) {
         case 'nav':navigate(id);break;
+        case 'toggle-sidebar':toggleSidebar(el);break;
         case 'drawer':drawerOpen=!drawerOpen;render();break;
         case 'close-drawer':drawerOpen=false;render();break;
         case 'new-note':noteEditor(null,el.dataset.menu|| (route.startsWith('menu:')?route.slice(5):null));break;

@@ -27,3 +27,22 @@
 .note-editor-meta{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:12px}
 .note-editor-meta .hint{display:block;margin-top:5px}
 @media(max-width:680px){.note-filter-field{flex:1 1 130px}.note-editor-meta{grid-template-columns:minmax(0,1fr);gap:0}}
+
+/* Keep the scrollbar space stable and only reveal the thumb on interaction. */
+.side-custom{--menu-scroll-thumb:transparent}
+@media (hover:hover) and (pointer:fine){
+  .side-custom:hover{--menu-scroll-thumb:#95674e}
+}
+.side-custom:has(:focus-visible){--menu-scroll-thumb:#95674e}
+@supports (scrollbar-width:thin) and (scrollbar-color:transparent transparent){
+  .side-custom{scrollbar-width:thin;scrollbar-color:var(--menu-scroll-thumb) transparent}
+}
+@supports not ((scrollbar-width:thin) and (scrollbar-color:transparent transparent)){
+  .side-custom::-webkit-scrollbar{width:6px}
+  .side-custom::-webkit-scrollbar-track,.side-custom::-webkit-scrollbar-corner{background:transparent}
+  .side-custom::-webkit-scrollbar-thumb{background:var(--menu-scroll-thumb);border-radius:999px}
+  .side-custom::-webkit-scrollbar-button{display:none}
+}
+@media (forced-colors:active){
+  .side-custom{scrollbar-width:auto;scrollbar-color:auto}
+}
